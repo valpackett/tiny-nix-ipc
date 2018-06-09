@@ -1,7 +1,7 @@
 extern crate nix;
 
 use std::{mem, ptr, slice};
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{RawFd, FromRawFd};
 use nix::{errno, unistd};
 use nix::fcntl::{self, FdFlag, FcntlArg};
 use nix::sys::uio::IoVec;
@@ -14,21 +14,22 @@ pub struct Socket {
     fd: RawFd,
 }
 
+impl FromRawFd for Socket {
+    unsafe fn from_raw_fd(fd: RawFd) -> Socket {
+        Socket {
+            fd,
+        }
+    }
+}
+
 impl Socket {
     /// Creates a socket pair (AF_UNIX/SOCK_SEQPACKET).
     ///
     /// Both sockets are close-on-exec by default.
     pub fn new_socketpair() -> nix::Result<(Socket, Socket)> {
         socketpair(AddressFamily::Unix, SockType::SeqPacket, None, SockFlag::SOCK_CLOEXEC).map(|(a, b)| {
-            (Self::from_raw(a), Self::from_raw(b))
+            unsafe { (Self::from_raw_fd(a), Self::from_raw_fd(b)) }
         })
-    }
-
-    /// Wraps an existing file descriptor in a Socket.
-    pub fn from_raw(fd: RawFd) -> Socket {
-        Socket {
-            fd,
-        }
     }
 
     /// Disables close-on-exec on the socket (to preserve it across process forks).
