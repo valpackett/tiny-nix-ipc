@@ -1,0 +1,14 @@
+[package]
+name = "tiny-nix-ipc"
+version = "0.0.0"
+authors = [ "Greg V <greg@unrelenting.technology>" ]
+keywords = [ "System", "Unix", "IPC", "Socket", "FdPassing" ]
+categories = ["os::unix-apis"]
+description = "Minimal wrapper for using sockets as IPC with file descriptor passing"
+license = "Unlicense"
+readme = "README.md"
+homepage = "https://github.com/myfreeweb/tiny-nix-ipc"
+repository = "https://github.com/myfreeweb/tiny-nix-ipc"
+
+[dependencies]
+nix = "0.11"
