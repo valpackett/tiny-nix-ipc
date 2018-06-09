@@ -1,10 +1,14 @@
 extern crate nix;
 #[macro_use]
 extern crate error_chain;
-#[cfg(any(feature = "cbor"))]
+#[cfg(any(feature = "ser_cbor", feature = "ser_json", feature = "ser_bincode"))]
 extern crate serde;
-#[cfg(feature = "cbor")]
+#[cfg(feature = "ser_cbor")]
 extern crate serde_cbor;
+#[cfg(feature = "ser_json")]
+extern crate serde_json;
+#[cfg(feature = "ser_bincode")]
+extern crate bincode;
 
 use std::{mem, ptr, slice};
 use std::os::unix::io::{RawFd, FromRawFd, IntoRawFd, AsRawFd};
@@ -20,7 +24,9 @@ pub mod errors {
     error_chain!{
         foreign_links {
             Nix(::nix::Error);
-            Cbor(::serde_cbor::error::Error) #[cfg(feature = "cbor")];
+            Cbor(::serde_cbor::error::Error) #[cfg(feature = "ser_cbor")];
+            Json(::serde_json::Error) #[cfg(feature = "ser_json")];
+            Bincode(::bincode::Error) #[cfg(feature = "ser_bincode")];
         }
 
         errors {
@@ -172,13 +178,53 @@ impl Socket {
     /// as `[RawFd; n]`, where `n` is the number of descriptors you want to receive.
     ///
     /// Received file descriptors are set close-on-exec.
-    #[cfg(feature = "cbor")]
+    #[cfg(feature = "ser_cbor")]
     pub fn recv_cbor<T: serde::de::DeserializeOwned, F: Default + AsMut<[RawFd]>>(&mut self, buf_size: usize) -> Result<(T, Option<F>)> {
         let (bytes, buf, len, rfds) = self.recv_into_buf_with_len(buf_size)?;
         if bytes != len as usize + mem::size_of::<u64>() {
             bail!(ErrorKind::WrongRecvLength);
         }
         Ok((serde_cbor::from_slice(&buf[..])?, rfds))
+    }
+
+    /// Reads bytes from the socket and deserializes them as a given data type using JSON.
+    /// If the size does not match, returns `WrongRecvLength`.
+    ///
+    /// You have to provide a size for the receive buffer.
+    /// It should be large enough for the data you want to receive plus 64 bits for the length.
+    ///
+    /// If file descriptors were passed, returns them too.
+    /// To receive file descriptors, you need to instantiate the type parameter `F`
+    /// as `[RawFd; n]`, where `n` is the number of descriptors you want to receive.
+    ///
+    /// Received file descriptors are set close-on-exec.
+    #[cfg(feature = "ser_json")]
+    pub fn recv_json<T: serde::de::DeserializeOwned, F: Default + AsMut<[RawFd]>>(&mut self, buf_size: usize) -> Result<(T, Option<F>)> {
+        let (bytes, buf, len, rfds) = self.recv_into_buf_with_len(buf_size)?;
+        if bytes != len as usize + mem::size_of::<u64>() {
+            bail!(ErrorKind::WrongRecvLength);
+        }
+        Ok((serde_json::from_slice(&buf[..])?, rfds))
+    }
+
+    /// Reads bytes from the socket and deserializes them as a given data type using Bincode.
+    /// If the size does not match, returns `WrongRecvLength`.
+    ///
+    /// You have to provide a size for the receive buffer.
+    /// It should be large enough for the data you want to receive plus 64 bits for the length.
+    ///
+    /// If file descriptors were passed, returns them too.
+    /// To receive file descriptors, you need to instantiate the type parameter `F`
+    /// as `[RawFd; n]`, where `n` is the number of descriptors you want to receive.
+    ///
+    /// Received file descriptors are set close-on-exec.
+    #[cfg(feature = "ser_bincode")]
+    pub fn recv_bincode<T: serde::de::DeserializeOwned, F: Default + AsMut<[RawFd]>>(&mut self, buf_size: usize) -> Result<(T, Option<F>)> {
+        let (bytes, buf, len, rfds) = self.recv_into_buf_with_len(buf_size)?;
+        if bytes != len as usize + mem::size_of::<u64>() {
+            bail!(ErrorKind::WrongRecvLength);
+        }
+        Ok((bincode::deserialize(&buf[..])?, rfds))
     }
 
     /// Sends bytes from scatter-gather vectors over the socket.
@@ -222,9 +268,27 @@ impl Socket {
     /// Serializes a value with CBOR and sends it over the socket.
     ///
     /// Optionally passes file descriptors with the message.
-    #[cfg(feature = "cbor")]
+    #[cfg(feature = "ser_cbor")]
     pub fn send_cbor<T: serde::ser::Serialize>(&mut self, data: &T, fds: Option<&[RawFd]>) -> Result<usize> {
         let bytes = serde_cbor::to_vec(data)?;
+        self.send_slice_with_len(&bytes[..], fds)
+    }
+
+    /// Serializes a value with JSON and sends it over the socket.
+    ///
+    /// Optionally passes file descriptors with the message.
+    #[cfg(feature = "ser_json")]
+    pub fn send_json<T: serde::ser::Serialize>(&mut self, data: &T, fds: Option<&[RawFd]>) -> Result<usize> {
+        let bytes = serde_json::to_vec(data)?;
+        self.send_slice_with_len(&bytes[..], fds)
+    }
+
+    /// Serializes a value with Bincode and sends it over the socket.
+    ///
+    /// Optionally passes file descriptors with the message.
+    #[cfg(feature = "ser_bincode")]
+    pub fn send_bincode<T: serde::ser::Serialize>(&mut self, data: &T, fds: Option<&[RawFd]>) -> Result<usize> {
+        let bytes = bincode::serialize(data)?;
         self.send_slice_with_len(&bytes[..], fds)
     }
 }
@@ -340,13 +404,36 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "cbor")]
+    #[cfg(feature = "ser_cbor")]
     fn test_cbor() {
         use serde_cbor::value::Value;
         let (mut rx, mut tx) = Socket::new_socketpair().unwrap();
         let data = Value::U64(123456);
         let _ = tx.send_cbor(&data, None).unwrap();
         let (rdata, rfds) = rx.recv_cbor::<Value, [RawFd; 0]>(24).unwrap();
+        assert_eq!(rfds, None);
+        assert_eq!(rdata, data);
+    }
+
+    #[test]
+    #[cfg(feature = "ser_json")]
+    fn test_json() {
+        use serde_json::value::Value;
+        let (mut rx, mut tx) = Socket::new_socketpair().unwrap();
+        let data = Value::String("hi".to_owned());
+        let _ = tx.send_json(&data, None).unwrap();
+        let (rdata, rfds) = rx.recv_json::<Value, [RawFd; 0]>(24).unwrap();
+        assert_eq!(rfds, None);
+        assert_eq!(rdata, data);
+    }
+
+    #[test]
+    #[cfg(feature = "ser_bincode")]
+    fn test_bincode() {
+        let (mut rx, mut tx) = Socket::new_socketpair().unwrap();
+        let data = Some("hello world".to_string());
+        let _ = tx.send_bincode(&data, None).unwrap();
+        let (rdata, rfds) = rx.recv_bincode::<Option<String>, [RawFd; 0]>(24).unwrap();
         assert_eq!(rfds, None);
         assert_eq!(rdata, data);
     }

@@ -9,7 +9,7 @@ A small and convenient Rust library for using (UNIX domain) sockets for simple s
 - if you want to poll (using `poll`, `select`, `kqueue`, `epoll`, abstractions like [mio](https://github.com/carllerche/mio), etc.), get the fd using `AsRawFd`
 - all send/recv methods allow file descriptor (fd) passing
 - you can send/recv raw iovecs (scatter-gather vectors), buffers, structs and [serde](https://serde.rs/)-serialized objects
-- serde is optional, select a Cargo feature for the format you want (CBOR)
+- serde is optional, select a Cargo feature for the format you want (`ser_cbor`, `ser_json`, `ser_bincode`)
 
 ## Usage
 
@@ -85,7 +85,7 @@ let (rdata, rfds) = chld.recv_struct::<TestStruct, [RawFd; 0]>().unwrap();
 Send a [Serde](https://serde.rs/)-serializable value serialized as [CBOR](http://cbor.io/) (via [serde_cbor](https://github.com/pyfisch/cbor)):
 
 ```toml
-tiny-nix-ipc = { version = "0", features = ["cbor"] }
+tiny-nix-ipc = { version = "0", features = ["ser_cbor"] }
 ```
 
 ```rust
