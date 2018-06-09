@@ -1,7 +1,7 @@
 extern crate nix;
 
 use std::{mem, ptr, slice};
-use std::os::unix::io::{RawFd, FromRawFd};
+use std::os::unix::io::{RawFd, FromRawFd, IntoRawFd, AsRawFd};
 use nix::{errno, unistd};
 use nix::fcntl::{self, FdFlag, FcntlArg};
 use nix::sys::uio::IoVec;
@@ -22,6 +22,18 @@ impl FromRawFd for Socket {
     }
 }
 
+impl IntoRawFd for Socket {
+    fn into_raw_fd(self) -> RawFd {
+        self.fd
+    }
+}
+
+impl AsRawFd for Socket {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd
+    }
+}
+
 impl Socket {
     /// Creates a socket pair (AF_UNIX/SOCK_SEQPACKET).
     ///
@@ -35,13 +47,6 @@ impl Socket {
     /// Disables close-on-exec on the socket (to preserve it across process forks).
     pub fn no_cloexec(&mut self) -> nix::Result<()> {
         fcntl::fcntl(self.fd, FcntlArg::F_SETFD(FdFlag::empty())).map(|_| ())
-    }
-
-    /// Returns the underlying file descriptor.
-    ///
-    /// You can use it to poll with poll/select/kqueue/epoll/whatever, mio, etc.
-    pub fn raw_fd(&self) -> RawFd {
-        self.fd
     }
 
     /// Reads bytes from the socket into the given scatter/gather array.
