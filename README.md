@@ -8,7 +8,8 @@ A small and convenient Rust library for using (UNIX domain) sockets for simple s
 - `Socket::new_socketpair` makes a `socketpair` with the settings you want (`AF_UNIX/SOCK_SEQPACKET/CLOEXEC`), but you can use `FromRawFd` of course
 - if you want to poll (using `poll`, `select`, `kqueue`, `epoll`, abstractions like [mio](https://github.com/carllerche/mio), etc.), get the fd using `AsRawFd`
 - all send/recv methods allow file descriptor (fd) passing
-- you can send/recv raw iovecs (scatter-gather vectors), buffers, structs
+- you can send/recv raw iovecs (scatter-gather vectors), buffers, structs and [serde](https://serde.rs/)-serialized objects
+- serde is optional, select a Cargo feature for the format you want (CBOR)
 
 ## Usage
 
@@ -77,8 +78,28 @@ let _ = prnt.send_struct(&data, None).unwrap();
 Receive a struct:
 
 ```rust
-let (rdata, rfds) = rx.recv_struct::<TestStruct, [RawFd; 0]>().unwrap();
+let (rdata, rfds) = chld.recv_struct::<TestStruct, [RawFd; 0]>().unwrap();
 // rdata == TestStruct { one: -65, two: 0xDEADBEEF, }, rfds == None
+```
+
+Send a [Serde](https://serde.rs/)-serializable value serialized as [CBOR](http://cbor.io/) (via [serde_cbor](https://github.com/pyfisch/cbor)):
+
+```toml
+tiny-nix-ipc = { version = "0", features = ["cbor"] }
+```
+
+```rust
+use serde_cbor::value::Value;
+let data = Value::U64(123456); // can be your Serializable
+let sent_bytes = prnt.send_cbor(&data, None).unwrap();
+// sent_bytes == 4
+```
+
+Receive a [Serde](https://serde.rs/)-deserializable value serialized as CBOR:
+
+```rust
+let (rdata, rfds) = chld.recv_cbor::<Value, [RawFd; 0]>(24).unwrap();
+// rdata == Value::U64(123456)
 ```
 
 ## Contributing

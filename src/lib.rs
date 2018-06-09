@@ -1,4 +1,8 @@
 extern crate nix;
+#[cfg(any(feature = "cbor"))]
+extern crate serde;
+#[cfg(feature = "cbor")]
+extern crate serde_cbor;
 
 use std::{mem, ptr, slice};
 use std::os::unix::io::{RawFd, FromRawFd, IntoRawFd, AsRawFd};
@@ -84,6 +88,47 @@ impl Socket {
         self.recv_into_iovec(&iov)
     }
 
+    /// Reads bytes from the socket into a new buffer.
+    ///
+    /// If file descriptors were passed, returns them too.
+    /// To receive file descriptors, you need to instantiate the type parameter `F`
+    /// as `[RawFd; n]`, where `n` is the number of descriptors you want to receive.
+    ///
+    /// Received file descriptors are set close-on-exec.
+    pub fn recv_into_buf<F: Default + AsMut<[RawFd]>>(&mut self, buf_size: usize) -> nix::Result<(usize, Vec<u8>, Option<F>)> {
+        let mut buf = vec![0u8; buf_size];
+        let (bytes, rfds) = {
+            let iov = [IoVec::from_mut_slice(&mut buf[..])];
+            self.recv_into_iovec(&iov)?
+        };
+        Ok((bytes, buf, rfds))
+    }
+
+    /// Reads bytes from the socket into a new buffer, also reading the first 64 bits as length.
+    /// The resulting buffer is truncated to that length.
+    ///
+    /// If file descriptors were passed, returns them too.
+    /// To receive file descriptors, you need to instantiate the type parameter `F`
+    /// as `[RawFd; n]`, where `n` is the number of descriptors you want to receive.
+    ///
+    /// Received file descriptors are set close-on-exec.
+    pub fn recv_into_buf_with_len<F: Default + AsMut<[RawFd]>>(&mut self, buf_size: usize) -> nix::Result<(usize, Vec<u8>, u64, Option<F>)> {
+        let mut len: u64 = 0;
+        let mut buf = vec![0u8; buf_size];
+        let (bytes, rfds) = {
+            let iov = [
+                IoVec::from_mut_slice(unsafe { slice::from_raw_parts_mut((&mut len as *mut u64) as *mut u8, mem::size_of::<u64>()) }),
+                IoVec::from_mut_slice(&mut buf[..]),
+            ];
+            self.recv_into_iovec(&iov)?
+        };
+        if bytes != len as usize + mem::size_of::<u64>() {
+            return Err(nix::Error::Sys(errno::Errno::ENOMSG));
+        }
+        buf.truncate(len as usize);
+        Ok((bytes, buf, len, rfds))
+    }
+
     /// Reads bytes from the socket and interprets them as a given data type.
     /// If the size does not match, returns ENOMSG.
     ///
@@ -93,12 +138,28 @@ impl Socket {
     ///
     /// Received file descriptors are set close-on-exec.
     pub fn recv_struct<T, F: Default + AsMut<[RawFd]>>(&mut self) -> nix::Result<(T, Option<F>)> {
-        let mut buf = vec![0u8; mem::size_of::<T>()];
-        let (bytes, rfds) = self.recv_into_slice(&mut buf[..])?;
+        let (bytes, buf, rfds) = self.recv_into_buf(mem::size_of::<T>())?;
         if bytes != mem::size_of::<T>() {
             return Err(nix::Error::Sys(errno::Errno::ENOMSG));
         }
         Ok((unsafe { ptr::read(buf.as_slice().as_ptr() as *const _) }, rfds))
+    }
+
+    /// Reads bytes from the socket and deserializes them as a given data type using CBOR.
+    /// If the size does not match, returns ENOMSG.
+    ///
+    /// You have to provide a size for the receive buffer.
+    /// It should be large enough for the data you want to receive plus 64 bits for the length.
+    ///
+    /// If file descriptors were passed, returns them too.
+    /// To receive file descriptors, you need to instantiate the type parameter `F`
+    /// as `[RawFd; n]`, where `n` is the number of descriptors you want to receive.
+    ///
+    /// Received file descriptors are set close-on-exec.
+    #[cfg(feature = "cbor")]
+    pub fn recv_cbor<T: serde::de::DeserializeOwned, F: Default + AsMut<[RawFd]>>(&mut self, buf_size: usize) -> nix::Result<(T, Option<F>)> {
+        let (_, buf, _, rfds) = self.recv_into_buf_with_len(buf_size)?;
+        Ok((serde_cbor::from_slice(&buf[..]).unwrap(), rfds))
     }
 
     /// Sends bytes from scatter-gather vectors over the socket.
@@ -139,6 +200,14 @@ impl Socket {
         self.send_slice(unsafe { slice::from_raw_parts((data as *const T) as *const u8, mem::size_of::<T>()) }, fds)
     }
 
+    /// Serializes a value with CBOR and sends it over the socket.
+    ///
+    /// Optionally passes file descriptors with the message.
+    #[cfg(feature = "cbor")]
+    pub fn send_cbor<T: serde::ser::Serialize>(&mut self, data: &T, fds: Option<&[RawFd]>) -> nix::Result<usize> {
+        let bytes = serde_cbor::to_vec(data).unwrap(); // XXX
+        self.send_slice_with_len(&bytes[..], fds)
+    }
 }
 
 impl Drop for Socket {
@@ -250,5 +319,17 @@ mod tests {
             assert_eq!(content, "hello\n");
         }
         unsafe { ManuallyDrop::drop(&mut orig_file); }
+    }
+
+    #[test]
+    #[cfg(feature = "cbor")]
+    fn test_cbor() {
+        use serde_cbor::value::Value;
+        let (mut rx, mut tx) = Socket::new_socketpair().unwrap();
+        let data = Value::U64(123456);
+        let _ = tx.send_cbor(&data, None).unwrap();
+        let (rdata, rfds) = rx.recv_cbor::<Value, [RawFd; 0]>(24).unwrap();
+        assert_eq!(rfds, None);
+        assert_eq!(rdata, data);
     }
 }
