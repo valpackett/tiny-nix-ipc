@@ -12,3 +12,6 @@ repository = "https://github.com/myfreeweb/tiny-nix-ipc"
 
 [dependencies]
 nix = "0.11"
+
+[dev-dependencies]
+shmemfdrs = "0"

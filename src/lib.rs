@@ -140,3 +140,109 @@ impl Drop for Socket {
         let _ = unistd::close(self.fd);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    extern crate shmemfdrs;
+    use super::Socket;
+    use std::os::unix::io::RawFd;
+
+    #[test]
+    fn test_slice_success() {
+        let (mut rx, mut tx) = Socket::new_socketpair().unwrap();
+        let data = [0xDE, 0xAD, 0xBE, 0xEF];
+        let sent = tx.send_slice(&data[..], None).unwrap();
+        assert_eq!(sent, 4);
+        let mut rdata = [0; 4];
+        let (recvd, rfds) = rx.recv_into_slice::<[RawFd; 0]>(&mut rdata[..]).unwrap();
+        assert_eq!(recvd, 4);
+        assert_eq!(rfds, None);
+        assert_eq!(&rdata[..], &data[..]);
+    }
+
+    #[test]
+    fn test_slice_buf_too_short() {
+        let (mut rx, mut tx) = Socket::new_socketpair().unwrap();
+        let data = [0xDE, 0xAD, 0xBE, 0xEF];
+        let sent = tx.send_slice(&data[..], None).unwrap();
+        assert_eq!(sent, 4);
+        let mut rdata = [0; 3];
+        let (recvd, rfds) = rx.recv_into_slice::<[RawFd; 0]>(&mut rdata[..]).unwrap();
+        assert_eq!(recvd, 3);
+        assert_eq!(rfds, None);
+        assert_eq!(&rdata[..], &data[0..3]);
+    }
+
+    #[test]
+    fn test_slice_with_len_success() {
+        let (mut rx, mut tx) = Socket::new_socketpair().unwrap();
+        let data = [0xDE, 0xAD, 0xBE, 0xEF];
+        let sent = tx.send_slice_with_len(&data[..], None).unwrap();
+        assert_eq!(sent, 12); // 4 + 8 (bytes in a 64-bit number)
+        let mut rdata = [0; 12];
+        let (recvd, rfds) = rx.recv_into_slice::<[RawFd; 0]>(&mut rdata[..]).unwrap();
+        assert_eq!(recvd, 12);
+        assert_eq!(rfds, None);
+        assert_eq!(rdata[0], 4);
+        assert_eq!(&rdata[8..], &data[..]);
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct TestStruct {
+        one: i8,
+        two: u32,
+    }
+
+    #[test]
+    fn test_struct_success() {
+        let (mut rx, mut tx) = Socket::new_socketpair().unwrap();
+        let data = TestStruct { one: -64, two: 0xDEADBEEF, };
+        let _ = tx.send_struct(&data, None).unwrap();
+        let (rdata, rfds) = rx.recv_struct::<TestStruct, [RawFd; 0]>().unwrap();
+        assert_eq!(rfds, None);
+        assert_eq!(rdata, data);
+    }
+
+    #[test]
+    fn test_struct_wrong_len() {
+        use nix::{errno, Error};
+        let (mut rx, mut tx) = Socket::new_socketpair().unwrap();
+        let data = [0xDE, 0xAD, 0xBE, 0xEF];
+        let sent = tx.send_slice(&data[..], None).unwrap();
+        assert_eq!(sent, 4);
+        let ret = rx.recv_struct::<TestStruct, [RawFd; 0]>();
+        assert_eq!(ret, Err(Error::Sys(errno::Errno::ENOMSG)));
+    }
+
+    #[test]
+    fn test_fd_passing() {
+        use std::fs::File;
+        use std::io::{Read, Write, Seek, SeekFrom};
+        use std::os::unix::io::FromRawFd;
+        use std::ffi::CString;
+        use std::mem::ManuallyDrop;
+        let fd = shmemfdrs::create_shmem(CString::new("/test").unwrap(), 6);
+        let mut orig_file = {
+            let mut file = unsafe { File::from_raw_fd(fd) };
+            file.write_all(b"hello\n").unwrap();
+            ManuallyDrop::new(file) // do not destroy the actual file before it's read
+        };
+        let (mut rx, mut tx) = Socket::new_socketpair().unwrap();
+        let data = [0xDE, 0xAD, 0xBE, 0xEF];
+        let sent = tx.send_slice(&data[..], Some(&[fd])).unwrap();
+        assert_eq!(sent, 4);
+        let mut rdata = [0; 4];
+        let (recvd, rfds) = rx.recv_into_slice::<[RawFd; 1]>(&mut rdata[..]).unwrap();
+        assert_eq!(recvd, 4);
+        assert_eq!(&rdata[..], &data[..]);
+        let new_fd = rfds.unwrap()[0];
+        {
+            let mut file = unsafe { File::from_raw_fd(new_fd) };
+            let mut content = String::new();
+            file.seek(SeekFrom::Start(0)).unwrap();
+            file.read_to_string(&mut content).unwrap();
+            assert_eq!(content, "hello\n");
+        }
+        unsafe { ManuallyDrop::drop(&mut orig_file); }
+    }
+}
