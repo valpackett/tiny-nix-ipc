@@ -2,7 +2,7 @@
 name = "tiny-nix-ipc"
 version = "0.1.0"
 authors = [ "Greg V <greg@unrelenting.technology>" ]
-keywords = [ "System", "Unix", "IPC", "Socket", "FdPassing", "serde" ]
+keywords = [ "System", "Unix", "IPC", "Socket", "FdPassing" ]
 categories = ["os::unix-apis"]
 description = "Minimal wrapper for using sockets as IPC with file descriptor passing"
 license = "Unlicense"
