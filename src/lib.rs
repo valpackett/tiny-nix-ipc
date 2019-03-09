@@ -161,12 +161,19 @@ impl Socket {
     /// as `[RawFd; n]`, where `n` is the number of descriptors you want to receive.
     ///
     /// Received file descriptors are set close-on-exec.
-    pub fn recv_struct<T, F: Default + AsMut<[RawFd]>>(&mut self) -> Result<(T, Option<F>)> {
+    ///
+    /// # Safety
+    /// - For some types (e.g.), not every bit pattern is allowed. If bytes, read from socket
+    /// aren't correct, that's UB.
+    /// - Some types mustn't change their memory location (see `std::pin::Pin`). Sending object of
+    /// such a type is UB.
+    ///
+    pub unsafe fn recv_struct<T, F: Default + AsMut<[RawFd]>>(&mut self) -> Result<(T, Option<F>)> {
         let (bytes, buf, rfds) = self.recv_into_buf(mem::size_of::<T>())?;
         if bytes != mem::size_of::<T>() {
             bail!(ErrorKind::WrongRecvLength);
         }
-        Ok((unsafe { ptr::read(buf.as_slice().as_ptr() as *const _) }, rfds))
+        Ok((ptr::read(buf.as_slice().as_ptr() as *const _), rfds))
     }
 
     /// Reads bytes from the socket and deserializes them as a given data type using CBOR.
@@ -263,8 +270,11 @@ impl Socket {
     ///  Use serialization in that case!)
     ///
     /// Optionally passes file descriptors with the message.
-    pub fn send_struct<T>(&mut self, data: &T, fds: Option<&[RawFd]>) -> Result<usize> {
-        self.send_slice(unsafe { slice::from_raw_parts((data as *const T) as *const u8, mem::size_of::<T>()) }, fds)
+    ///
+    /// # Safety
+    /// See `recv_struct`
+    pub unsafe fn send_struct<T>(&mut self, data: &T, fds: Option<&[RawFd]>) -> Result<usize> {
+        self.send_slice(slice::from_raw_parts((data as *const T) as *const u8, mem::size_of::<T>()), fds)
     }
 
     /// Serializes a value with CBOR and sends it over the socket.
