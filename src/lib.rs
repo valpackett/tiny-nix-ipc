@@ -12,11 +12,11 @@ extern crate bincode;
 
 use std::{mem, ptr, slice};
 use std::os::unix::io::{RawFd, FromRawFd, IntoRawFd, AsRawFd};
-use nix::{errno, unistd};
+use nix::unistd;
 use nix::fcntl::{self, FdFlag, FcntlArg};
 use nix::sys::uio::IoVec;
 use nix::sys::socket::{
-    recvmsg, RecvMsg, sendmsg, CmsgSpace, ControlMessage, MsgFlags,
+    recvmsg, sendmsg, CmsgSpace, ControlMessageOwned, ControlMessage, MsgFlags,
     socketpair, AddressFamily, SockFlag, SockType,
 };
 
@@ -92,10 +92,10 @@ impl Socket {
         let mut cmsgspace: CmsgSpace<F> = CmsgSpace::new();
         let msg = recvmsg(self.fd, iov, Some(&mut cmsgspace), MsgFlags::MSG_CMSG_CLOEXEC)?;
         for cmsg in msg.cmsgs() {
-            if let ControlMessage::ScmRights(fds) = cmsg {
+            if let ControlMessageOwned::ScmRights(fds) = cmsg {
                 if fds.len() >= 1 {
                     let mut fd_arr: F = Default::default();
-                    <F as AsMut<[RawFd]>>::as_mut(&mut fd_arr).clone_from_slice(fds);
+                    <F as AsMut<[RawFd]>>::as_mut(&mut fd_arr).clone_from_slice(&fds);
                     rfds = Some(fd_arr);
                 }
             }
@@ -153,6 +153,22 @@ impl Socket {
         Ok((bytes, buf, len, rfds))
     }
 
+
+    /// See `recv_struct` for docs
+    ///
+    /// # Safety
+    /// - For some types (e.g.), not every bit pattern is allowed. If bytes, read from socket
+    /// aren't correct, that's UB.
+    /// - Some types mustn't change their memory location (see `std::pin::Pin`). Sending object of
+    /// such a type is UB.
+    pub unsafe fn recv_struct_raw<T, F: Default + AsMut<[RawFd]>>(&mut self) -> Result<(T, Option<F>)> {
+        let (bytes, buf, rfds) = self.recv_into_buf(mem::size_of::<T>())?;
+        if bytes != mem::size_of::<T>() {
+            bail!(ErrorKind::WrongRecvLength);
+        }
+        Ok((ptr::read(buf.as_slice().as_ptr() as *const _), rfds))
+    }
+    
     /// Reads bytes from the socket and interprets them as a given data type.
     /// If the size does not match, returns `WrongRecvLength`..
     ///
@@ -161,19 +177,11 @@ impl Socket {
     /// as `[RawFd; n]`, where `n` is the number of descriptors you want to receive.
     ///
     /// Received file descriptors are set close-on-exec.
-    ///
-    /// # Safety
-    /// - For some types (e.g.), not every bit pattern is allowed. If bytes, read from socket
-    /// aren't correct, that's UB.
-    /// - Some types mustn't change their memory location (see `std::pin::Pin`). Sending object of
-    /// such a type is UB.
-    ///
-    pub unsafe fn recv_struct<T, F: Default + AsMut<[RawFd]>>(&mut self) -> Result<(T, Option<F>)> {
-        let (bytes, buf, rfds) = self.recv_into_buf(mem::size_of::<T>())?;
-        if bytes != mem::size_of::<T>() {
-            bail!(ErrorKind::WrongRecvLength);
+    #[cfg(feature = "zerocopy")]
+    pub fn recv_struct<T: zerocopy::FromBytes, F: Default + AsMut<[RawFd]>>(&mut self) -> Result<(T, Option<F>)> {
+        unsafe {
+            self.recv_struct_raw()
         }
-        Ok((ptr::read(buf.as_slice().as_ptr() as *const _), rfds))
     }
 
     /// Reads bytes from the socket and deserializes them as a given data type using CBOR.
@@ -265,17 +273,29 @@ impl Socket {
         self.send_iovec(&iov[..], fds)
     }
 
+    /// See `send_struct` for docs.
+    ///
+    /// # Safety
+    /// - T must not have padding bytes.
+    /// - Also, if T violates `recv_struct_raw` safety preconditions, receiving it will trigger
+    /// undefined behavior.
+    pub unsafe fn send_struct_raw<T>(&mut self, data: &T, fds: Option<&[RawFd]>) -> Result<usize> {
+        self.send_slice(slice::from_raw_parts((data as *const T) as *const u8, mem::size_of::<T>()), fds)
+    }
+
     /// Sends a value of any type as its raw bytes over the socket.
     /// (Do not use with types that contain pointers, references, boxes, etc.!
     ///  Use serialization in that case!)
     ///
     /// Optionally passes file descriptors with the message.
-    ///
-    /// # Safety
-    /// See `recv_struct`
-    pub unsafe fn send_struct<T>(&mut self, data: &T, fds: Option<&[RawFd]>) -> Result<usize> {
-        self.send_slice(slice::from_raw_parts((data as *const T) as *const u8, mem::size_of::<T>()), fds)
+    #[cfg(feature = "zerocopy")]
+    pub fn send_struct<T: zerocopy::AsBytes>(&mut self, data: &T, fds: Option<&[RawFd]>) -> Result<usize> {
+        unsafe {
+            self.send_struct_raw(data, fds)
+        }
     }
+
+
 
     /// Serializes a value with CBOR and sends it over the socket.
     ///

@@ -14,14 +14,16 @@ repository = "https://github.com/myfreeweb/tiny-nix-ipc"
 ser_cbor = ["serde", "serde_cbor"]
 ser_json = ["serde", "serde_json"]
 ser_bincode = ["serde", "bincode"]
+zero_copy = ["zerocopy"]
 
 [dependencies]
-nix = "0.13"
+nix = "0.15"
 error-chain = "0.12"
 serde = { version = "1.0", optional = true }
 serde_cbor = { version = "0", optional = true }
 serde_json = { version = "1.0", optional = true }
 bincode = { version = "1.0", optional = true }
+zerocopy = { version = "0.2.8", optional = true }
 
 [dev-dependencies]
 shmemfdrs = "0.1"
