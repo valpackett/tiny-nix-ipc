@@ -9,6 +9,9 @@ extern crate serde_cbor;
 extern crate serde_json;
 #[cfg(feature = "ser_bincode")]
 extern crate bincode;
+#[cfg(feature = "zero_copy")]
+#[macro_use]
+extern crate zerocopy;
 
 use std::{mem, ptr, slice};
 use std::os::unix::io::{RawFd, FromRawFd, IntoRawFd, AsRawFd};
@@ -177,7 +180,7 @@ impl Socket {
     /// as `[RawFd; n]`, where `n` is the number of descriptors you want to receive.
     ///
     /// Received file descriptors are set close-on-exec.
-    #[cfg(feature = "zerocopy")]
+    #[cfg(feature = "zero_copy")]
     pub fn recv_struct<T: zerocopy::FromBytes, F: Default + AsMut<[RawFd]>>(&mut self) -> Result<(T, Option<F>)> {
         unsafe {
             self.recv_struct_raw()
@@ -288,7 +291,7 @@ impl Socket {
     ///  Use serialization in that case!)
     ///
     /// Optionally passes file descriptors with the message.
-    #[cfg(feature = "zerocopy")]
+    #[cfg(feature = "zero_copy")]
     pub fn send_struct<T: zerocopy::AsBytes>(&mut self, data: &T, fds: Option<&[RawFd]>) -> Result<usize> {
         unsafe {
             self.send_struct_raw(data, fds)
@@ -377,16 +380,21 @@ mod tests {
         assert_eq!(&rdata[8..], &data[..]);
     }
 
-    #[derive(Debug, PartialEq)]
+    #[derive(Debug, PartialEq, FromBytes, AsBytes)]
+    #[repr(C)]
     struct TestStruct {
         one: i8,
+        // Note an explicit padding bytes here
+        // Without it, `send_struct` would read real compiler-provided padding, which is UB
+        pad: [u8; 3],
         two: u32,
     }
 
     #[test]
+    #[cfg(feature = "zero_copy")]
     fn test_struct_success() {
         let (mut rx, mut tx) = Socket::new_socketpair().unwrap();
-        let data = TestStruct { one: -64, two: 0xDEADBEEF, };
+        let data = TestStruct { one: -64, two: 0xDEADBEEF, pad: [0, 0, 0]};
         let _ = tx.send_struct(&data, None).unwrap();
         let (rdata, rfds) = rx.recv_struct::<TestStruct, [RawFd; 0]>().unwrap();
         assert_eq!(rfds, None);
@@ -394,6 +402,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "zero_copy")]
     fn test_struct_wrong_len() {
         let (mut rx, mut tx) = Socket::new_socketpair().unwrap();
         let data = [0xDE, 0xAD, 0xBE, 0xEF];
