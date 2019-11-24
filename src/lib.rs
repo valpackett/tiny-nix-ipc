@@ -339,6 +339,8 @@ mod tests {
     extern crate shmemfdrs;
     use super::Socket;
     use std::os::unix::io::RawFd;
+    #[cfg(feature = "zero_copy")]
+    use zerocopy::AsBytes;
 
     #[test]
     fn test_slice_success() {
@@ -380,6 +382,7 @@ mod tests {
         assert_eq!(&rdata[8..], &data[..]);
     }
 
+    #[cfg(feature = "zero_copy")]
     #[derive(Debug, PartialEq, FromBytes, AsBytes)]
     #[repr(C)]
     struct TestStruct {
