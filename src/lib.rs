@@ -15,11 +15,11 @@ extern crate zerocopy;
 
 use std::{mem, ptr, slice};
 use std::os::unix::io::{RawFd, FromRawFd, IntoRawFd, AsRawFd};
-use nix::unistd;
+use nix::{unistd, cmsg_space};
 use nix::fcntl::{self, FdFlag, FcntlArg};
 use nix::sys::uio::IoVec;
 use nix::sys::socket::{
-    recvmsg, sendmsg, CmsgSpace, ControlMessageOwned, ControlMessage, MsgFlags,
+    recvmsg, sendmsg, ControlMessageOwned, ControlMessage, MsgFlags,
     socketpair, AddressFamily, SockFlag, SockType,
 };
 
@@ -92,7 +92,7 @@ impl Socket {
     /// Received file descriptors are set close-on-exec.
     pub fn recv_into_iovec<F: Default + AsMut<[RawFd]>>(&mut self, iov: &[IoVec<&mut [u8]>]) -> Result<(usize, Option<F>)> {
         let mut rfds = None;
-        let mut cmsgspace: CmsgSpace<F> = CmsgSpace::new();
+        let mut cmsgspace = cmsg_space!(F);
         let msg = recvmsg(self.fd, iov, Some(&mut cmsgspace), MsgFlags::MSG_CMSG_CLOEXEC)?;
         for cmsg in msg.cmsgs() {
             if let ControlMessageOwned::ScmRights(fds) = cmsg {
