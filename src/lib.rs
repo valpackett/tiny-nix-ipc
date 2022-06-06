@@ -14,13 +14,13 @@ extern crate bincode;
 extern crate zerocopy;
 
 use std::{mem, ptr, slice};
+use std::io::{IoSliceMut, IoSlice};
 use std::os::unix::io::{RawFd, FromRawFd, IntoRawFd, AsRawFd};
 use nix::{unistd, cmsg_space};
 use nix::fcntl::{self, FdFlag, FcntlArg};
-use nix::sys::uio::IoVec;
 use nix::sys::socket::{
     recvmsg, sendmsg, ControlMessageOwned, ControlMessage, MsgFlags,
-    socketpair, AddressFamily, SockFlag, SockType,
+    socketpair, AddressFamily, SockFlag, SockType, UnixAddr,
 };
 
 pub mod errors {
@@ -90,10 +90,10 @@ impl Socket {
     /// as `[RawFd; n]`, where `n` is the number of descriptors you want to receive.
     ///
     /// Received file descriptors are set close-on-exec.
-    pub fn recv_into_iovec<F: Default + AsMut<[RawFd]>>(&mut self, iov: &[IoVec<&mut [u8]>]) -> Result<(usize, Option<F>)> {
+    pub fn recv_into_iovec<F: Default + AsMut<[RawFd]>>(&mut self, iov: &mut [IoSliceMut]) -> Result<(usize, Option<F>)> {
         let mut rfds = None;
         let mut cmsgspace = cmsg_space!(F);
-        let msg = recvmsg(self.fd, iov, Some(&mut cmsgspace), MsgFlags::MSG_CMSG_CLOEXEC)?;
+        let msg = recvmsg::<UnixAddr>(self.fd, iov, Some(&mut cmsgspace), MsgFlags::MSG_CMSG_CLOEXEC)?;
         for cmsg in msg.cmsgs() {
             if let ControlMessageOwned::ScmRights(fds) = cmsg {
                 if fds.len() >= 1 {
@@ -114,8 +114,8 @@ impl Socket {
     ///
     /// Received file descriptors are set close-on-exec.
     pub fn recv_into_slice<F: Default + AsMut<[RawFd]>>(&mut self, buf: &mut [u8]) -> Result<(usize, Option<F>)> {
-        let iov = [IoVec::from_mut_slice(&mut buf[..])];
-        self.recv_into_iovec(&iov)
+        let mut iov = [IoSliceMut::new(&mut buf[..])];
+        self.recv_into_iovec(&mut iov)
     }
 
     /// Reads bytes from the socket into a new buffer.
@@ -128,8 +128,8 @@ impl Socket {
     pub fn recv_into_buf<F: Default + AsMut<[RawFd]>>(&mut self, buf_size: usize) -> Result<(usize, Vec<u8>, Option<F>)> {
         let mut buf = vec![0u8; buf_size];
         let (bytes, rfds) = {
-            let iov = [IoVec::from_mut_slice(&mut buf[..])];
-            self.recv_into_iovec(&iov)?
+            let mut iov = [IoSliceMut::new(&mut buf[..])];
+            self.recv_into_iovec(&mut iov)?
         };
         Ok((bytes, buf, rfds))
     }
@@ -146,11 +146,11 @@ impl Socket {
         let mut len: u64 = 0;
         let mut buf = vec![0u8; buf_size];
         let (bytes, rfds) = {
-            let iov = [
-                IoVec::from_mut_slice(unsafe { slice::from_raw_parts_mut((&mut len as *mut u64) as *mut u8, mem::size_of::<u64>()) }),
-                IoVec::from_mut_slice(&mut buf[..]),
+            let mut iov = [
+                IoSliceMut::new(unsafe { slice::from_raw_parts_mut((&mut len as *mut u64) as *mut u8, mem::size_of::<u64>()) }),
+                IoSliceMut::new(&mut buf[..]),
             ];
-            self.recv_into_iovec(&iov)?
+            self.recv_into_iovec(&mut iov)?
         };
         buf.truncate(len as usize);
         Ok((bytes, buf, len, rfds))
@@ -250,11 +250,11 @@ impl Socket {
     /// Sends bytes from scatter-gather vectors over the socket.
     ///
     /// Optionally passes file descriptors with the message.
-    pub fn send_iovec(&mut self, iov: &[IoVec<&[u8]>], fds: Option<&[RawFd]>) -> Result<usize> {
+    pub fn send_iovec(&mut self, iov: &[IoSlice], fds: Option<&[RawFd]>) -> Result<usize> {
         if let Some(rfds) = fds {
-            sendmsg(self.fd, iov, &[ControlMessage::ScmRights(rfds)], MsgFlags::empty(), None).map_err(|e| e.into())
+            sendmsg::<UnixAddr>(self.fd, iov, &[ControlMessage::ScmRights(rfds)], MsgFlags::empty(), None).map_err(|e| e.into())
         } else {
-            sendmsg(self.fd, iov, &[], MsgFlags::empty(), None).map_err(|e| e.into())
+            sendmsg::<UnixAddr>(self.fd, iov, &[], MsgFlags::empty(), None).map_err(|e| e.into())
         }
     }
 
@@ -262,7 +262,7 @@ impl Socket {
     ///
     /// Optionally passes file descriptors with the message.
     pub fn send_slice(&mut self, data: &[u8], fds: Option<&[RawFd]>) -> Result<usize> {
-        let iov = [IoVec::from_slice(data)];
+        let iov = [IoSlice::new(data)];
         self.send_iovec(&iov[..], fds)
     }
 
@@ -272,7 +272,7 @@ impl Socket {
     /// Optionally passes file descriptors with the message.
     pub fn send_slice_with_len(&mut self, data: &[u8], fds: Option<&[RawFd]>) -> Result<usize> {
         let len = data.len() as u64;
-        let iov = [IoVec::from_slice(unsafe { slice::from_raw_parts((&len as *const u64) as *const u8, mem::size_of::<u64>()) }), IoVec::from_slice(data)];
+        let iov = [IoSlice::new(unsafe { slice::from_raw_parts((&len as *const u64) as *const u8, mem::size_of::<u64>()) }), IoSlice::new(data)];
         self.send_iovec(&iov[..], fds)
     }
 
@@ -452,7 +452,7 @@ mod tests {
     fn test_cbor() {
         use serde_cbor::value::Value;
         let (mut rx, mut tx) = Socket::new_socketpair().unwrap();
-        let data = Value::U64(123456);
+        let data = Value::Integer(123456);
         let _ = tx.send_cbor(&data, None).unwrap();
         let (rdata, rfds) = rx.recv_cbor::<Value, [RawFd; 0]>(24).unwrap();
         assert_eq!(rfds, None);
