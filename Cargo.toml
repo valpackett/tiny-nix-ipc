@@ -1,6 +1,6 @@
 [package]
 name = "tiny-nix-ipc"
-version = "0.1.1"
+version = "0.2.0"
 authors = [ "Greg V <greg@unrelenting.technology>" ]
 keywords = [ "System", "Unix", "IPC", "Socket", "FdPassing" ]
 categories = ["os::unix-apis"]
