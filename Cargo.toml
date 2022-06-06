@@ -17,7 +17,7 @@ ser_bincode = ["serde", "bincode"]
 zero_copy = ["zerocopy"]
 
 [dependencies]
-nix = "0.15"
+nix = "0.20"
 error-chain = "0.12"
 serde = { version = "1.0", optional = true }
 serde_cbor = { version = "0", optional = true }
